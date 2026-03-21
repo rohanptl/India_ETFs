@@ -10,7 +10,7 @@ try:
 except Exception as e:
     raise SystemExit("Install yfinance pandas numpy openpyxl. " + str(e))
 
-DEFAULT_CASH_TICKER = "SGOV"
+DEFAULT_CASH_TICKER = "LIQUIDBEES.NS"
 DEFAULT_TOP_K = 5
 DEFAULT_MAX_ALLOC = 0.20
 DEFAULT_EMA_FAST = 10
@@ -30,7 +30,7 @@ DEFAULT_EXTENDED_FROM_EMA = 0.05
 DEFAULT_HOLD_BUFFER_MULTIPLIER = 2
 DEFAULT_OFFENSIVE_TARGET = 0.80
 DEFAULT_BENCHMARK_HURDLE = "spy"
-REBALANCE_MAP = {"W": "W-FRI", "M": "M", "Q": "Q"}
+REBALANCE_MAP = {"W": "W-FRI", "M": "ME", "Q": "QE"}
 
 def print_progress(message: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
@@ -133,62 +133,79 @@ def weekly_proxy_macd_hist(series: pd.Series) -> pd.Series:
     _, _, h = macd(weekly)
     return h.reindex(series.index, method="ffill")
 
-def classify_sleeve(ticker: str) -> str:
-    offensive = {"QQQ","VGT","IGV","SOXX","SMH","ARKK","AIQ","BOTZ","CLOU","WCLD","FDN","IYW","IWF","MTUM","JMOM",
-                 "QCLN","TAN","PBW","CIBR","HACK","XLK","XLY","XLC","IWM","IJR","VB","VUG","SCHG","MGK","IBIT","ETHA",
-                 "KWEB","EMQQ","ARKW","ARKG","ROBT","XT","FTEC","IWO","VONG","SPYG","VTI","VOO","SPY","DIA"}
-    defensive = {"SGOV","SHY","IEF","TLT","BIL","TIP","GLD","IAU","UUP","USMV","SPLV","QUAL","SCHD","VTV","IVE","IWD",
-                 "XLU","XLP","VYM","DVY","JEPI","JEPQ","BND","AGG","LQD","DBC","GSG","REET","VNQ"}
-    if ticker in offensive: return "offensive"
-    if ticker in defensive: return "defensive"
-    return "offensive"
+def classify_sleeve(ticker: str, cash_ticker: str) -> str:
+    return "cash" if ticker == cash_ticker else "ranked"
 
 def benchmark_hurdle_return(metrics: pd.DataFrame, hurdle_mode: str) -> float:
     hurdle_mode = hurdle_mode.lower()
     benchmark_returns = {}
-    for b in ["SPY","QQQ","DIA"]:
+    for b in ["NIFTYBEES.NS","SENSEXBEES.BO"]:
         row = metrics.loc[metrics["ticker"] == b]
         if not row.empty and pd.notna(row.iloc[0]["ret_6m"]):
             benchmark_returns[b] = float(row.iloc[0]["ret_6m"])
     if hurdle_mode == "none": return -np.inf
-    if hurdle_mode == "spy": return benchmark_returns.get("SPY", -np.inf)
-    if hurdle_mode == "qqq": return benchmark_returns.get("QQQ", -np.inf)
-    if hurdle_mode == "dia": return benchmark_returns.get("DIA", -np.inf)
-    if hurdle_mode == "best_of_3": return max(benchmark_returns.values()) if benchmark_returns else -np.inf
+    if hurdle_mode == "nifty": return benchmark_returns.get("NIFTYBEES.NS", -np.inf)
+    if hurdle_mode == "sensex": return benchmark_returns.get("SENSEXBEES.BO", -np.inf)
+    if hurdle_mode == "best_of_2": return max(benchmark_returns.values()) if benchmark_returns else -np.inf
     raise ValueError(f"Unsupported benchmark hurdle mode: {hurdle_mode}")
 
 def build_snapshot_metrics(universe, ohlcv, asof, cash_ticker, momentum_lookback_days, breakout_days, exit_days, atr_days):
     rows = []
+    skipped = {}
     for ticker in universe:
-        if ticker not in ohlcv: continue
+        if ticker not in ohlcv:
+            skipped[ticker] = "no_download"
+            continue
         df = ohlcv[ticker].loc[:asof].copy()
-        if len(df) < max(DEFAULT_SMA_LONG, breakout_days + 5, momentum_lookback_days + 5): continue
+        df = df.dropna(subset=["Close"])
+        if len(df) < 5:
+            skipped[ticker] = f"insufficient_history:{len(df)}"
+            continue
         close = df["Adj Close"] if "Adj Close" in df.columns else df["Close"]
         high, low = df["High"], df["Low"]
-        sma50, sma200, ema10 = sma(close, DEFAULT_SMA_MID), sma(close, DEFAULT_SMA_LONG), ema(close, DEFAULT_EMA_FAST)
+
+        hist_len = len(df)
+        sma_mid_window = min(DEFAULT_SMA_MID, hist_len)
+        sma_long_window = min(DEFAULT_SMA_LONG, hist_len)
+        momentum_window = max(2, min(momentum_lookback_days, hist_len - 1))
+        breakout_window = max(2, min(breakout_days, hist_len - 1))
+        exit_window = max(2, min(exit_days, hist_len - 1))
+        atr_window = max(2, min(atr_days, hist_len))
+        vol_window = max(2, min(DEFAULT_VOL_DAYS, hist_len))
+        breakout_recent_window = max(2, min(DEFAULT_BREAKOUT_RECENT_DAYS, hist_len - 1))
+
+        sma50 = sma(close, sma_mid_window)
+        sma200 = sma(close, sma_long_window)
+        ema10 = ema(close, min(DEFAULT_EMA_FAST, hist_len))
         macd_line, signal_line, hist = macd(close)
-        atr15 = atr(high, low, close, atr_days)
-        rv20 = realized_vol(close, DEFAULT_VOL_DAYS)
+        atr15 = atr(high, low, close, atr_window)
+        rv20 = realized_vol(close, vol_window)
         weekly_hist = weekly_proxy_macd_hist(close)
-        prior_high = close.shift(1).rolling(breakout_days).max()
-        prior_low = close.shift(1).rolling(exit_days).min()
-        breakout_recent = (close.shift(1).rolling(DEFAULT_BREAKOUT_RECENT_DAYS).max() < close).iloc[-1]
+        prior_high = close.shift(1).rolling(breakout_window).max()
+        prior_low = close.shift(1).rolling(exit_window).min()
+        breakout_recent = (close.shift(1).rolling(breakout_recent_window).max() < close).iloc[-1]
         latest = float(close.iloc[-1])
-        ret_6m = float(latest / close.iloc[-momentum_lookback_days] - 1.0)
+        ret_6m = float(latest / close.iloc[-(momentum_window + 1)] - 1.0) if hist_len > momentum_window else np.nan
+        sma50_last = float(sma50.iloc[-1]) if not pd.isna(sma50.iloc[-1]) else latest
+        sma200_last = float(sma200.iloc[-1]) if not pd.isna(sma200.iloc[-1]) else latest
+        ema10_last = float(ema10.iloc[-1]) if not pd.isna(ema10.iloc[-1]) else latest
         rows.append({
-            "ticker": ticker, "last_close": latest, "sma50": float(sma50.iloc[-1]), "sma200": float(sma200.iloc[-1]),
-            "ema10": float(ema10.iloc[-1]), "macd": float(macd_line.iloc[-1]), "macd_signal": float(signal_line.iloc[-1]),
+            "ticker": ticker, "last_close": latest, "sma50": sma50_last, "sma200": sma200_last,
+            "ema10": ema10_last, "macd": float(macd_line.iloc[-1]), "macd_signal": float(signal_line.iloc[-1]),
             "macd_hist": float(hist.iloc[-1]), "weekly_macd_hist": float(weekly_hist.iloc[-1]) if not pd.isna(weekly_hist.iloc[-1]) else np.nan,
             "atr15": float(atr15.iloc[-1]) if not pd.isna(atr15.iloc[-1]) else np.nan,
             "realized_vol20": float(rv20.iloc[-1]) if not pd.isna(rv20.iloc[-1]) else np.nan,
             "ret_6m": ret_6m, "breakout_89d": bool(latest > prior_high.iloc[-1]) if not pd.isna(prior_high.iloc[-1]) else False,
             "breakout_recent": bool(breakout_recent) if not pd.isna(breakout_recent) else False,
             "exit_13d": bool(latest < prior_low.iloc[-1]) if not pd.isna(prior_low.iloc[-1]) else False,
-            "above_ema10": bool(latest > float(ema10.iloc[-1])), "above_sma200": bool(latest > float(sma200.iloc[-1])),
-            "sma50_gt_sma200": bool(float(sma50.iloc[-1]) > float(sma200.iloc[-1])),
-            "cash_like": ticker == cash_ticker, "sleeve": classify_sleeve(ticker)
+            "above_ema10": bool(latest > ema10_last), "above_sma200": bool(latest > sma200_last),
+            "sma50_gt_sma200": bool(sma50_last > sma200_last),
+            "cash_like": ticker == cash_ticker, "sleeve": classify_sleeve(ticker, cash_ticker),
+            "history_days": hist_len, "effective_sma200_days": sma_long_window, "effective_momentum_days": momentum_window
         })
-    if not rows: raise ValueError("No metrics available at snapshot date.")
+    if not rows:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(skipped.items())) or "no symbols produced metrics"
+        raise ValueError(f"No metrics available at snapshot date. Details: {detail}")
     return pd.DataFrame(rows)
 
 def capped_normalize(weights: pd.Series, max_cap: float, uncapped_tickers: Optional[Set[str]] = None) -> pd.Series:
@@ -276,15 +293,11 @@ def select_candidates(metrics: pd.DataFrame, cash_ticker: str, top_k: int, max_a
     if df["realized_vol20"].notna().any():
         inv_vol_scaled = 1.0 - ((df["realized_vol20"] - df["realized_vol20"].min()) / (df["realized_vol20"].max() - df["realized_vol20"].min() + 1e-12))
         score += inv_vol_scaled * 1.0
-    score += (df["sleeve"] == "offensive").astype(float) * 0.5
     score -= df["exit_13d"].astype(float) * 4.0
     df["raw_score"] = score
     df.loc[(~df["eligible"]) & (~df["cash_like"]), "raw_score"] = 0.0
-    offensive = df[(~df["cash_like"]) & (df["sleeve"] == "offensive")].sort_values("raw_score", ascending=False).copy()
-    defensive = df[(~df["cash_like"]) & (df["sleeve"] == "defensive")].sort_values("raw_score", ascending=False).copy()
-    offensive_k = max(1, min(top_k, math.ceil(top_k * DEFAULT_OFFENSIVE_TARGET)))
-    defensive_k = max(0, top_k - offensive_k)
-    selected = set(offensive.head(offensive_k)["ticker"].tolist()) | set(defensive.head(defensive_k)["ticker"].tolist())
+    ranked_candidates = df[(~df["cash_like"])].sort_values("raw_score", ascending=False).copy()
+    selected = set(ranked_candidates.head(top_k)["ticker"].tolist())
     if prev_holdings:
         all_ranked = df[(~df["cash_like"])].sort_values("raw_score", ascending=False).copy()
         all_ranked["rank"] = np.arange(1, len(all_ranked) + 1)
@@ -359,7 +372,7 @@ def allocation_mode(universe_path, holdings_path, cash_ticker, top_k, export_pre
     bad = sorted(set(holdings["ticker"]) - set(universe))
     if bad: raise ValueError(f"Holdings contain tickers not in Wealthfront universe: {bad}")
     if cash_ticker not in universe: raise ValueError(f"{cash_ticker} must exist in the universe file")
-    tickers = sorted(set(universe) | {"SPY","QQQ","DIA"})
+    tickers = sorted(set(universe) | {"NIFTYBEES.NS","SENSEXBEES.BO"})
     print_progress(f"Universe loaded: {len(universe)} ETFs")
     ohlcv = download_ohlcv_history(tickers, start=start, end=end)
     print_progress("Building close-price matrix")
@@ -380,6 +393,8 @@ def allocation_mode(universe_path, holdings_path, cash_ticker, top_k, export_pre
     out["model_target_alloc_pct"] = out["model_target_weight"] * 100.0
     out["delta_pct_points"] = out["delta_weight"] * 100.0
     out["action"] = np.where(out["delta_weight"] > 1e-6, "INCREASE", np.where(out["delta_weight"] < -1e-6, "DECREASE", "HOLD"))
+    out.loc[(out["ticker"] == cash_ticker) & (out["action"] == "INCREASE"), "action"] = "MOVE TO CASH"
+    out.loc[(out["ticker"] == cash_ticker) & (out["action"] == "DECREASE"), "action"] = "REDUCE CASH"
     out["rationale"] = out.apply(lambda r: rationale_for_row(r, cash_ticker), axis=1)
     action_view = out.sort_values(["target_weight","raw_score","ticker"], ascending=[False,False,True])
     metrics_cols = ["ticker","sleeve","last_close","ret_6m","benchmark_hurdle","realized_vol20","atr15","above_ema10","above_sma200","sma50_gt_sma200","macd","macd_signal","macd_hist","weekly_macd_hist","breakout_89d","breakout_recent","exit_13d","raw_score","selected","entry_label","model_target_alloc_pct","current_alloc_pct","target_alloc_pct","delta_pct_points","action","rationale"]
@@ -389,8 +404,8 @@ def allocation_mode(universe_path, holdings_path, cash_ticker, top_k, export_pre
     action_view[action_cols].to_csv(f"{export_prefix}_rebalance_actions.csv", index=False)
     print("="*100); print("ENHANCED ETF STRATEGY STACK"); print("="*100)
     print(f"As of: {asof.date()}"); print(f"Benchmark hurdle mode: {hurdle_mode}")
-    print("Selection: concentrated, sleeve-aware, benchmark-relative, persistence-aware")
-    print("Execution: only BUY NOW names receive capital; WAIT FOR PULLBACK / DO NOT BUY stay in SGOV")
+    print("Selection: concentrated, benchmark-relative, persistence-aware")
+    print("Execution: only BUY NOW names receive capital; WAIT FOR PULLBACK / DO NOT BUY stay in the configured cash ticker")
     print(); print(action_view[action_cols].to_string(index=False)); print()
     print(f"Wrote: {export_prefix}_full_metrics.csv"); print(f"Wrote: {export_prefix}_rebalance_actions.csv")
 
@@ -447,7 +462,7 @@ def run_schedule_backtest(universe, ohlcv, close_px, schedule_code, cash_ticker,
             weights_history.append({"date": dt, **new_weights.to_dict()})
             selected_non_cash = alloc[(alloc["selected"]) & (~alloc["cash_like"])].copy()
             entry_counts = selected_non_cash["entry_label"].value_counts()
-            entry_label_history.append({"date": dt,"selected_non_cash_count": int(len(selected_non_cash)),"buy_now_count": int(entry_counts.get("BUY NOW", 0)),"wait_for_pullback_count": int(entry_counts.get("WAIT FOR PULLBACK", 0)),"do_not_buy_count": int(entry_counts.get("DO NOT BUY", 0)),"sgov_weight": float(alloc.loc[alloc["ticker"] == cash_ticker, "target_weight"].sum())})
+            entry_label_history.append({"date": dt,"selected_non_cash_count": int(len(selected_non_cash)),"buy_now_count": int(entry_counts.get("BUY NOW", 0)),"wait_for_pullback_count": int(entry_counts.get("WAIT FOR PULLBACK", 0)),"do_not_buy_count": int(entry_counts.get("DO NOT BUY", 0)),"cash_weight": float(alloc.loc[alloc["ticker"] == cash_ticker, "target_weight"].sum())})
         weights = pending_weights.copy()
     equity = equity.ffill()
     return equity, pd.DataFrame(turnovers), pd.DataFrame(weights_history), pd.DataFrame(entry_label_history)
@@ -456,7 +471,7 @@ def backtest_mode(universe_path, cash_ticker, top_k, export_prefix, start, end, 
     print_progress("Loading ETF universe for backtest")
     universe = parse_universe_file(universe_path)
     if cash_ticker not in universe: raise ValueError(f"{cash_ticker} must exist in the universe file")
-    tickers = sorted(set(universe) | {"SPY","QQQ","DIA"})
+    tickers = sorted(set(universe) | {"NIFTYBEES.NS","SENSEXBEES.BO"})
     adjusted_start = (datetime.fromisoformat(start) - timedelta(days=400)).strftime("%Y-%m-%d")
     print_progress(f"Backtest window: {start} to {end} (using buffered download start {adjusted_start})")
     print_progress(f"Universe loaded: {len(universe)} ETFs")
@@ -477,16 +492,16 @@ def backtest_mode(universe_path, cash_ticker, top_k, export_prefix, start, end, 
         stats["Avg BUY NOW Count"] = float(e_df["buy_now_count"].mean()) if not e_df.empty else 0.0
         stats["Avg WAIT Count"] = float(e_df["wait_for_pullback_count"].mean()) if not e_df.empty else 0.0
         stats["Avg DO NOT BUY Count"] = float(e_df["do_not_buy_count"].mean()) if not e_df.empty else 0.0
-        stats["Avg SGOV Weight"] = float(e_df["sgov_weight"].mean()) if not e_df.empty else 0.0
+        stats["Avg Cash Weight"] = float(e_df["cash_weight"].mean()) if not e_df.empty else 0.0
         stats["Schedule"] = label
         summary_rows.append(stats)
-    for b in ["QQQ","SPY","DIA"]:
+    for b in ["NIFTYBEES.NS","SENSEXBEES.BO"]:
         if b in close_px.columns:
             eq = benchmark_series(close_px, start, end, b)
             stats = metrics_from_equity_curve(eq, pd.Series(dtype=float))
-            stats.update({"Schedule": b, "Avg BUY NOW Count": np.nan, "Avg WAIT Count": np.nan, "Avg DO NOT BUY Count": np.nan, "Avg SGOV Weight": np.nan})
+            stats.update({"Schedule": b, "Avg BUY NOW Count": np.nan, "Avg WAIT Count": np.nan, "Avg DO NOT BUY Count": np.nan, "Avg Cash Weight": np.nan})
             summary_rows.append(stats); equity_curves[b] = eq
-    summary = pd.DataFrame(summary_rows)[["Schedule","Total Return","CAGR","Annual Vol","Sharpe","Max Drawdown","Calmar","Avg Turnover/Rebalance","Num Rebalances","Avg BUY NOW Count","Avg WAIT Count","Avg DO NOT BUY Count","Avg SGOV Weight"]].sort_values("CAGR", ascending=False)
+    summary = pd.DataFrame(summary_rows)[["Schedule","Total Return","CAGR","Annual Vol","Sharpe","Max Drawdown","Calmar","Avg Turnover/Rebalance","Num Rebalances","Avg BUY NOW Count","Avg WAIT Count","Avg DO NOT BUY Count","Avg Cash Weight"]].sort_values("CAGR", ascending=False)
     equity_df = pd.DataFrame(equity_curves)
     print_progress("Writing backtest output files")
     summary.to_csv(f"{export_prefix}_backtest_summary.csv", index=False)
@@ -494,9 +509,9 @@ def backtest_mode(universe_path, cash_ticker, top_k, export_prefix, start, end, 
     for label, df in turnover_tables.items(): df.to_csv(f"{export_prefix}_{label.lower()}_turnover.csv", index=False)
     for label, df in weight_tables.items(): df.to_csv(f"{export_prefix}_{label.lower()}_weights_history.csv", index=False)
     for label, df in entry_label_tables.items(): df.to_csv(f"{export_prefix}_{label.lower()}_entry_labels.csv", index=False)
-    print("="*126); print("BACKTEST SUMMARY: WEEKLY vs MONTHLY vs QUARTERLY vs BENCHMARKS (SPY, QQQ, DIA)"); print("="*126)
+    print("="*126); print("BACKTEST SUMMARY: WEEKLY vs MONTHLY vs QUARTERLY vs BENCHMARKS (NIFTYBEES.NS, SENSEXBEES.BO)"); print("="*126)
     display = summary.copy()
-    for c in ["Total Return","CAGR","Annual Vol","Max Drawdown","Avg Turnover/Rebalance","Avg SGOV Weight"]:
+    for c in ["Total Return","CAGR","Annual Vol","Max Drawdown","Avg Turnover/Rebalance","Avg Cash Weight"]:
         display[c] = display[c].map(lambda x: f"{x:.2%}" if isinstance(x, (float, np.floating)) and pd.notna(x) else x)
     display["Sharpe"] = summary["Sharpe"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
     display["Calmar"] = summary["Calmar"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
@@ -515,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--start")
     p.add_argument("--end")
     p.add_argument("--export-prefix", default="wealthfront_v2")
-    p.add_argument("--benchmark-hurdle", default=DEFAULT_BENCHMARK_HURDLE, choices=["none","spy","qqq","dia","best_of_3"])
+    p.add_argument("--benchmark-hurdle", default=DEFAULT_BENCHMARK_HURDLE, choices=["none","nifty","sensex","best_of_2"])
     return p
 
 def main():

@@ -1,0 +1,27 @@
+ticker,sleeve,entry_label,current_alloc_pct,model_target_alloc_pct,target_alloc_pct,delta_pct_points,action,rationale
+LIQUIDBEES.NS,cash,DO NOT BUY,0.0,0.0,100.0,100.0,MOVE TO CASH,LIQUIDBEES.NS holds residual cash while selected ETFs wait for valid entry signals; uncapped.
+MON100.NS,ranked,DO NOT BUY,0.0,50.0,0.0,0.0,HOLD,"Selected on ranking, but do not buy. Sleeve=ranked, current entry signal weak or invalid."
+MAFANG.NS,ranked,DO NOT BUY,0.0,50.0,0.0,0.0,HOLD,"Selected on ranking, but do not buy. Sleeve=ranked, current entry signal weak or invalid."
+AUTOBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+BANKBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+CONSUMBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+CPSEETF.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+FMCGIETF.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+GOLDBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+HDFCQUAL.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+HDFCSML250.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+HNGSNGBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+INFRABEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+ITBEES.NS,ranked,DO NOT BUY,100.0,0.0,0.0,-100.0,DECREASE,Not selected or failed hurdle/filter rules.
+JUNIORBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+MAHKTECH.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+MASPTOP50.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+METALIETF.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+MID150BEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+MODEFENCE.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+MONQ50.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+MOREALTY.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+OILIETF.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+PHARMABEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+PSUBNKBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
+SILVERBEES.NS,ranked,DO NOT BUY,0.0,0.0,0.0,0.0,HOLD,Not selected or failed hurdle/filter rules.
