@@ -1,0 +1,361 @@
+name: India ETF allocation report
+
+on:
+  workflow_dispatch:
+    inputs:
+      universe_file:
+        description: "Path to universe file in repo"
+        required: false
+        default: "IndiaETFs.txt"
+      holdings_file:
+        description: "Path to holdings CSV in repo"
+        required: false
+        default: "holdings.csv"
+      cash_ticker:
+        description: "Cash / parking ticker"
+        required: false
+        default: "LIQUIDBEES.NS"
+      top_k:
+        description: "Number of ranked ETFs to select"
+        required: false
+        default: "5"
+      benchmark_hurdle:
+        description: "Benchmark hurdle mode"
+        required: false
+        default: "best_of_2"
+      export_prefix:
+        description: "Output file prefix"
+        required: false
+        default: "india_alloc"
+  schedule:
+    # 13:30 UTC on Sunday = 9:30 AM America/New_York during daylight saving time.
+    # During standard time this will run at 8:30 AM America/New_York.
+    - cron: "30 13 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  allocate:
+    runs-on: ubuntu-latest
+    env:
+      DEFAULT_UNIVERSE_FILE: IndiaETFs.txt
+      DEFAULT_HOLDINGS_FILE: holdings.csv
+      DEFAULT_CASH_TICKER: LIQUIDBEES.NS
+      DEFAULT_TOP_K: "5"
+      DEFAULT_BENCHMARK_HURDLE: best_of_2
+      DEFAULT_EXPORT_PREFIX: india_alloc
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set runtime parameters
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "UNIVERSE_FILE=${{ inputs.universe_file }}" >> "$GITHUB_ENV"
+            echo "HOLDINGS_FILE=${{ inputs.holdings_file }}" >> "$GITHUB_ENV"
+            echo "CASH_TICKER=${{ inputs.cash_ticker }}" >> "$GITHUB_ENV"
+            echo "TOP_K=${{ inputs.top_k }}" >> "$GITHUB_ENV"
+            echo "BENCHMARK_HURDLE=${{ inputs.benchmark_hurdle }}" >> "$GITHUB_ENV"
+            echo "EXPORT_PREFIX=${{ inputs.export_prefix }}" >> "$GITHUB_ENV"
+          else
+            echo "UNIVERSE_FILE=${DEFAULT_UNIVERSE_FILE}" >> "$GITHUB_ENV"
+            echo "HOLDINGS_FILE=${DEFAULT_HOLDINGS_FILE}" >> "$GITHUB_ENV"
+            echo "CASH_TICKER=${DEFAULT_CASH_TICKER}" >> "$GITHUB_ENV"
+            echo "TOP_K=${DEFAULT_TOP_K}" >> "$GITHUB_ENV"
+            echo "BENCHMARK_HURDLE=${DEFAULT_BENCHMARK_HURDLE}" >> "$GITHUB_ENV"
+            echo "EXPORT_PREFIX=${DEFAULT_EXPORT_PREFIX}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate required files
+        shell: bash
+        run: |
+          test -f "strategy_stack_v2_india.py"
+          test -f "$UNIVERSE_FILE"
+          test -f "$HOLDINGS_FILE"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy openpyxl
+
+      - name: Run allocation
+        shell: bash
+        run: |
+          mkdir -p out
+          python strategy_stack_v2_india.py             --mode allocate             --universe "$UNIVERSE_FILE"             --holdings "$HOLDINGS_FILE"             --cash-ticker "$CASH_TICKER"             --top-k "$TOP_K"             --benchmark-hurdle "$BENCHMARK_HURDLE"             --export-prefix "out/$EXPORT_PREFIX"
+
+      - name: Build email body and collect attachments
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import html
+          import os
+          from datetime import datetime
+
+          import pandas as pd
+
+          out_dir = "out"
+          csvs = sorted(glob.glob(os.path.join(out_dir, "*.csv")))
+          if not csvs:
+              raise SystemExit("No CSV files were generated in out/")
+
+          rebalance_candidates = [
+              p for p in csvs
+              if p.endswith("_rebalance_actions.csv") or p.endswith("_allocation_changes.csv")
+          ]
+          metrics_candidates = [
+              p for p in csvs
+              if p.endswith("_full_metrics.csv") or p.endswith("_metrics_targets.csv")
+          ]
+
+          rebalance_file = rebalance_candidates[-1] if rebalance_candidates else None
+          metrics_file = metrics_candidates[-1] if metrics_candidates else None
+
+          actions = pd.read_csv(rebalance_file) if rebalance_file else pd.DataFrame()
+          metrics = pd.read_csv(metrics_file) if metrics_file else pd.DataFrame()
+
+          def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+              if df.empty:
+                  return df
+              rename_map = {}
+              for c in df.columns:
+                  cl = c.strip().lower()
+                  if cl == "ticker":
+                      rename_map[c] = "ticker"
+                  elif cl == "sleeve":
+                      rename_map[c] = "sleeve"
+                  elif cl == "entry_label":
+                      rename_map[c] = "entry_label"
+                  elif cl == "action":
+                      rename_map[c] = "action"
+                  elif cl == "rationale":
+                      rename_map[c] = "rationale"
+                  elif cl in ("current_alloc_%", "current_alloc_pct", "current allocation %"):
+                      rename_map[c] = "current_alloc"
+                  elif cl in ("target_alloc_%", "target_alloc_pct", "target allocation %"):
+                      rename_map[c] = "target_alloc"
+                  elif cl in ("model_target_alloc_%", "model_target_alloc_pct"):
+                      rename_map[c] = "model_target_alloc"
+                  elif cl in ("change_%pts", "delta_pct_points", "change_pct_points"):
+                      rename_map[c] = "delta_pts"
+              return df.rename(columns=rename_map)
+
+          actions = normalize_columns(actions)
+          metrics = normalize_columns(metrics)
+
+          if actions.empty and not metrics.empty and {"ticker", "action"}.issubset(metrics.columns):
+              actions = metrics.copy()
+
+          for col in ["current_alloc", "target_alloc", "model_target_alloc", "delta_pts"]:
+              if col in actions.columns:
+                  actions[col] = pd.to_numeric(actions[col], errors="coerce")
+
+          def fmt_pct(v):
+              if pd.isna(v):
+                  return ""
+              return f"{float(v):.2f}%"
+
+          def html_table(df: pd.DataFrame, columns: list[str]) -> str:
+              if df.empty:
+                  return "<p><i>None</i></p>"
+              present_cols = [c for c in columns if c in df.columns]
+              out = df[present_cols].copy()
+              for c in ["current_alloc", "target_alloc", "model_target_alloc", "delta_pts"]:
+                  if c in out.columns:
+                      out[c] = out[c].map(fmt_pct)
+              for c in out.columns:
+                  if out[c].dtype == object:
+                      out[c] = out[c].fillna("").map(lambda x: html.escape(str(x)))
+              return out.to_html(index=False, border=0, justify="left", escape=False)
+
+          increase_df = pd.DataFrame()
+          decrease_df = pd.DataFrame()
+          watch_df = pd.DataFrame()
+
+          if not actions.empty:
+              if "delta_pts" in actions.columns:
+                  actions["abs_delta_pts"] = actions["delta_pts"].abs()
+
+              if "action" in actions.columns:
+                  action_upper = actions["action"].astype(str).str.upper()
+                  increase_df = actions[action_upper.isin(["INCREASE", "MOVE TO CASH"])].copy()
+                  decrease_df = actions[action_upper.isin(["DECREASE", "REDUCE CASH"])].copy()
+
+              if "entry_label" in actions.columns:
+                  watch_df = actions[
+                      actions["entry_label"].astype(str).str.upper().eq("WAIT FOR PULLBACK")
+                  ].copy()
+
+              if not increase_df.empty and "abs_delta_pts" in increase_df.columns:
+                  increase_df = increase_df.sort_values("abs_delta_pts", ascending=False)
+              if not decrease_df.empty and "abs_delta_pts" in decrease_df.columns:
+                  decrease_df = decrease_df.sort_values("abs_delta_pts", ascending=False)
+              if not watch_df.empty and "model_target_alloc" in watch_df.columns:
+                  watch_df = watch_df.sort_values("model_target_alloc", ascending=False)
+
+          run_url = (
+              os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+              + "/"
+              + os.environ.get("GITHUB_REPOSITORY", "")
+              + "/actions/runs/"
+              + os.environ.get("GITHUB_RUN_ID", "")
+          )
+
+          generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+          total_increase = increase_df["delta_pts"].clip(lower=0).sum() if "delta_pts" in increase_df.columns and not increase_df.empty else 0.0
+          total_decrease = (-decrease_df["delta_pts"].clip(upper=0).sum()) if "delta_pts" in decrease_df.columns and not decrease_df.empty else 0.0
+
+          summary_bits = []
+          if not increase_df.empty:
+              summary_bits.append(f"<b>Buy / increase:</b> {len(increase_df)} ETF(s), total +{total_increase:.2f} pts")
+          if not decrease_df.empty:
+              summary_bits.append(f"<b>Sell / decrease:</b> {len(decrease_df)} ETF(s), total -{total_decrease:.2f} pts")
+          if not watch_df.empty:
+              summary_bits.append(f"<b>Watchlist / wait for pullback:</b> {len(watch_df)} ETF(s)")
+          if not summary_bits:
+              summary_bits.append("No rebalance actions were identified.")
+
+          increase_table = html_table(
+              increase_df.head(10),
+              ["ticker", "sleeve", "current_alloc", "target_alloc", "delta_pts", "entry_label", "rationale"],
+          )
+          decrease_table = html_table(
+              decrease_df.head(10),
+              ["ticker", "sleeve", "current_alloc", "target_alloc", "delta_pts", "entry_label", "rationale"],
+          )
+          watch_table = html_table(
+              watch_df.head(10),
+              ["ticker", "sleeve", "model_target_alloc", "entry_label", "rationale"],
+          )
+
+          metrics_note = (
+              f"<p><b>Metrics file:</b> {html.escape(os.path.basename(metrics_file))}</p>"
+              if metrics_file else ""
+          )
+          rebalance_note = (
+              f"<p><b>Rebalance file:</b> {html.escape(os.path.basename(rebalance_file))}</p>"
+              if rebalance_file else ""
+          )
+
+          body = f"""
+          <html>
+            <body style="font-family: Arial, sans-serif; font-size: 14px; color: #222;">
+              <p><b>India ETF allocation run completed.</b></p>
+
+              <p>
+                <b>Generated at:</b> {generated_at}<br>
+                <b>Repository:</b> {html.escape(os.environ.get("GITHUB_REPOSITORY", ""))}<br>
+                <b>Run:</b> <a href="{html.escape(run_url)}">{html.escape(run_url)}</a><br>
+                <b>Universe file:</b> {html.escape(os.environ.get("UNIVERSE_FILE", ""))}<br>
+                <b>Holdings file:</b> {html.escape(os.environ.get("HOLDINGS_FILE", ""))}<br>
+                <b>Cash ticker:</b> {html.escape(os.environ.get("CASH_TICKER", ""))}<br>
+                <b>Top K:</b> {html.escape(os.environ.get("TOP_K", ""))}<br>
+                <b>Benchmark hurdle:</b> {html.escape(os.environ.get("BENCHMARK_HURDLE", ""))}
+              </p>
+
+              <h3>Rebalance summary</h3>
+              <p>{"<br>".join(summary_bits)}</p>
+
+              <h3>Action now: Buy / Increase</h3>
+              {increase_table}
+
+              <h3>Action now: Sell / Decrease</h3>
+              {decrease_table}
+
+              <h3>Selected, but wait for pullback</h3>
+              {watch_table}
+
+              {rebalance_note}
+              {metrics_note}
+
+              <p><b>Attached:</b> all generated CSV artifacts from this run.</p>
+            </body>
+          </html>
+          """
+
+          with open("email_body.html", "w", encoding="utf-8") as f:
+              f.write(body)
+
+          with open("attachments.txt", "w", encoding="utf-8") as f:
+              for path in csvs:
+                  f.write(path + "\n")
+          PY
+
+      - name: Upload CSV artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: india-allocation-csvs
+          path: out/*.csv
+          if-no-files-found: error
+
+      - name: Send email
+        if: ${{ secrets.SMTP_HOST != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.EMAIL_FROM != '' && secrets.EMAIL_TO != '' }}
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import mimetypes
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          msg = EmailMessage()
+          subject = "India ETF rebalance actions"
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+              subject = "India ETF manual rebalance action report"
+
+          msg["Subject"] = subject
+          msg["From"] = os.environ["EMAIL_FROM"]
+          msg["To"] = os.environ["EMAIL_TO"]
+          msg.set_content(
+              "India ETF rebalance report attached. See HTML body for buy/increase, sell/decrease, and wait-for-pullback actions."
+          )
+
+          with open("email_body.html", "r", encoding="utf-8") as f:
+              msg.add_alternative(f.read(), subtype="html")
+
+          with open("attachments.txt", "r", encoding="utf-8") as f:
+              for line in f:
+                  path = line.strip()
+                  if not path:
+                      continue
+                  ctype, _ = mimetypes.guess_type(path)
+                  maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+                  with open(path, "rb") as fp:
+                      msg.add_attachment(
+                          fp.read(),
+                          maintype=maintype,
+                          subtype=subtype,
+                          filename=os.path.basename(path),
+                      )
+
+          host = os.environ["SMTP_HOST"]
+          port = int(os.environ.get("SMTP_PORT", "587"))
+
+          with smtplib.SMTP(host, port) as server:
+              server.starttls()
+              server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+              server.send_message(msg)
+          PY
+
+      - name: Email skipped notice
+        if: ${{ !(secrets.SMTP_HOST != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.EMAIL_FROM != '' && secrets.EMAIL_TO != '') }}
+        run: |
+          echo "Email step skipped because one or more SMTP secrets are missing."
