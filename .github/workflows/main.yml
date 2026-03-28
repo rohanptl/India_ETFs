@@ -6,7 +6,7 @@ on:
       universe_file:
         description: "Path to universe file in repo"
         required: false
-        default: "IndiaETFs.txt"
+        default: "IndianETFList.txt"
       holdings_file:
         description: "Path to holdings CSV in repo"
         required: false
@@ -19,18 +19,20 @@ on:
         description: "Number of ranked ETFs to select"
         required: false
         default: "5"
+      hold_band:
+        description: "Absolute hold rank threshold"
+        required: false
+        default: "7"
       benchmark_hurdle:
         description: "Benchmark hurdle mode"
         required: false
-        default: "best_of_2"
+        default: "nifty"
       export_prefix:
         description: "Output file prefix"
         required: false
         default: "india_alloc"
   schedule:
-    # 13:30 UTC on Sunday = 9:30 AM America/New_York during daylight saving time.
-    # During standard time this will run at 8:30 AM America/New_York.
-    - cron: "30 13 * * 0"
+    - cron: "0 10 * * 6"
 
 permissions:
   contents: read
@@ -39,11 +41,12 @@ jobs:
   allocate:
     runs-on: ubuntu-latest
     env:
-      DEFAULT_UNIVERSE_FILE: IndiaETFs.txt
+      DEFAULT_UNIVERSE_FILE: IndianETFList.txt
       DEFAULT_HOLDINGS_FILE: holdings.csv
       DEFAULT_CASH_TICKER: LIQUIDBEES.NS
       DEFAULT_TOP_K: "5"
-      DEFAULT_BENCHMARK_HURDLE: best_of_2
+      DEFAULT_HOLD_BAND: "7"
+      DEFAULT_BENCHMARK_HURDLE: nifty
       DEFAULT_EXPORT_PREFIX: india_alloc
       PYTHONUNBUFFERED: "1"
 
@@ -59,6 +62,7 @@ jobs:
             echo "HOLDINGS_FILE=${{ inputs.holdings_file }}" >> "$GITHUB_ENV"
             echo "CASH_TICKER=${{ inputs.cash_ticker }}" >> "$GITHUB_ENV"
             echo "TOP_K=${{ inputs.top_k }}" >> "$GITHUB_ENV"
+            echo "HOLD_BAND=${{ inputs.hold_band }}" >> "$GITHUB_ENV"
             echo "BENCHMARK_HURDLE=${{ inputs.benchmark_hurdle }}" >> "$GITHUB_ENV"
             echo "EXPORT_PREFIX=${{ inputs.export_prefix }}" >> "$GITHUB_ENV"
           else
@@ -66,6 +70,7 @@ jobs:
             echo "HOLDINGS_FILE=${DEFAULT_HOLDINGS_FILE}" >> "$GITHUB_ENV"
             echo "CASH_TICKER=${DEFAULT_CASH_TICKER}" >> "$GITHUB_ENV"
             echo "TOP_K=${DEFAULT_TOP_K}" >> "$GITHUB_ENV"
+            echo "HOLD_BAND=${DEFAULT_HOLD_BAND}" >> "$GITHUB_ENV"
             echo "BENCHMARK_HURDLE=${DEFAULT_BENCHMARK_HURDLE}" >> "$GITHUB_ENV"
             echo "EXPORT_PREFIX=${DEFAULT_EXPORT_PREFIX}" >> "$GITHUB_ENV"
           fi
@@ -91,7 +96,15 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          python strategy_stack_v2_india.py             --mode allocate             --universe "$UNIVERSE_FILE"             --holdings "$HOLDINGS_FILE"             --cash-ticker "$CASH_TICKER"             --top-k "$TOP_K"             --benchmark-hurdle "$BENCHMARK_HURDLE"             --export-prefix "out/$EXPORT_PREFIX"
+          python strategy_stack_v2_india.py \
+            --mode allocate \
+            --universe "$UNIVERSE_FILE" \
+            --holdings "$HOLDINGS_FILE" \
+            --cash-ticker "$CASH_TICKER" \
+            --top-k "$TOP_K" \
+            --hold-band "$HOLD_BAND" \
+            --benchmark-hurdle "$BENCHMARK_HURDLE" \
+            --export-prefix "out/$EXPORT_PREFIX"
 
       - name: Build email body and collect attachments
         shell: bash
@@ -261,6 +274,7 @@ jobs:
                 <b>Holdings file:</b> {html.escape(os.environ.get("HOLDINGS_FILE", ""))}<br>
                 <b>Cash ticker:</b> {html.escape(os.environ.get("CASH_TICKER", ""))}<br>
                 <b>Top K:</b> {html.escape(os.environ.get("TOP_K", ""))}<br>
+                <b>Hold band:</b> {html.escape(os.environ.get("HOLD_BAND", ""))}<br>
                 <b>Benchmark hurdle:</b> {html.escape(os.environ.get("BENCHMARK_HURDLE", ""))}
               </p>
 
